@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSetAndGet(t *testing.T) {
@@ -62,4 +63,27 @@ func TestConcurrent(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+func TestTTLExpiration(t *testing.T) {
+	cache := New()
+
+	cache.SetWithTTL("name", "Krishna", 2*time.Second)
+
+	time.Sleep(1 * time.Second)
+
+	_, ok := cache.Get("name")
+
+	if !ok {
+		t.Fatal("Disappered before TTL")
+	}
+
+	time.Sleep(2 * time.Second)
+
+	_, ok2 := cache.Get("name")
+
+	if ok2 {
+		t.Fatal("Still did not dissapear")
+	}
+
 }
