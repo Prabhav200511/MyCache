@@ -14,7 +14,10 @@ import (
 
 func handleConnection(conn net.Conn, cache *cache.Cache, aof *persistence.AOF) {
 	scanner := bufio.NewScanner(conn)
-	defer conn.Close()
+	defer func() {
+		cache.RemoveConnection(conn)
+		conn.Close()
+	}()
 
 	for scanner.Scan() {
 		command := scanner.Text()
@@ -301,7 +304,86 @@ TYPE key
 LLEN key
 HLEN key`
 			fmt.Fprintln(conn, helpText)
+		case "SUBSCRIBE":
+			{
+				if len(parts) != 2 {
+					fmt.Fprintln(conn, "ERR Invalid Command")
+					continue
+				}
 
+				channel := parts[1]
+
+				cache.Subscribe(channel, conn)
+
+				fmt.Fprintln(conn, "SUBSCRIBED", channel)
+			}
+		case "UNSUBSCRIBE":
+			{
+				if len(parts) != 2 {
+					fmt.Fprintln(conn, "ERR Invalid Command")
+					continue
+				}
+
+				channel := parts[1]
+
+				cache.Unsubscribe(channel, conn)
+
+				fmt.Fprintln(conn, "UNSUBSCRIBED", channel)
+			}
+		case "PUBLISH":
+			{
+				if len(parts) != 3 {
+					fmt.Fprintln(conn, "ERR Invalid Command")
+					continue
+				}
+
+				channel := parts[1]
+				message := parts[2]
+
+				cache.Publish(channel, message)
+
+				fmt.Fprintln(conn, "+OK")
+			}
+		case "SUBCOUNT":
+			{
+				if len(parts) != 2 {
+					fmt.Fprintln(conn, "ERR Invalid Command")
+					continue
+				}
+
+				channel := parts[1]
+
+				fmt.Fprintln(conn, cache.SubscriberCount(channel))
+			}
+		case "CHANNELS":
+			{
+				if len(parts) != 1 {
+					fmt.Fprintln(conn, "ERR Invalid Command")
+					continue
+				}
+
+				channels := cache.Channels()
+
+				for _, channel := range channels {
+					fmt.Fprintln(conn, channel)
+				}
+			}
+		case "REWRITEAOF":
+			{
+				if len(parts) != 1 {
+					fmt.Fprintln(conn, "ERR Invalid Command")
+					continue
+				}
+
+				err := aof.Rewrite(cache)
+
+				if err != nil {
+					fmt.Fprintln(conn, err.Error())
+					continue
+				}
+
+				fmt.Fprintln(conn, "+OK")
+			}
 		default:
 			fmt.Fprintln(conn, "ERR Invalid Command")
 		}

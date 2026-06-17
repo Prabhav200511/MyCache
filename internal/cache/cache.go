@@ -3,6 +3,8 @@ package cache
 import (
 	"container/list"
 	"errors"
+	"fmt"
+	"net"
 	"sync"
 	"time"
 )
@@ -29,6 +31,8 @@ type Cache struct {
 
 	lruList *list.List
 	lruMap  map[string]*list.Element
+
+	channels map[string]map[net.Conn]struct{}
 }
 
 type LRUEntry struct {
@@ -44,10 +48,11 @@ var (
 
 func New(_maxKeys int) *Cache {
 	c := &Cache{
-		data:    make(map[string]Item),
-		maxKeys: _maxKeys,
-		lruList: list.New(),
-		lruMap:  make(map[string]*list.Element),
+		data:     make(map[string]Item),
+		maxKeys:  _maxKeys,
+		lruList:  list.New(),
+		lruMap:   make(map[string]*list.Element),
+		channels: make(map[string]map[net.Conn]struct{}),
 	}
 	go c.startExpirationWorker()
 	return c
@@ -65,6 +70,10 @@ func (c *Cache) Set(key string, value string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data[key] = item
+	c.touch(key)
+	if len(c.data) > c.maxKeys {
+		c.evict()
+	}
 }
 
 func (c *Cache) Get(key string) (string, error) {
@@ -77,6 +86,7 @@ func (c *Cache) Get(key string) (string, error) {
 	if item.Type != StringType {
 		return "", ErrWrongType
 	}
+	c.touch(key)
 	return item.Value.(string), nil
 }
 
@@ -92,12 +102,17 @@ func (c *Cache) SetWithTTL(key string, value string, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.data[key] = item
+	c.touch(key)
+	if len(c.data) > c.maxKeys {
+		c.evict()
+	}
 }
 
 func (c *Cache) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.data, key)
+	c.removeFromLRU(key)
 }
 
 func (c *Cache) startExpirationWorker() {
@@ -112,6 +127,7 @@ func (c *Cache) startExpirationWorker() {
 			}
 			if item.ExpiresAt <= now {
 				delete(c.data, key)
+				c.removeFromLRU(key)
 			}
 		}
 		c.mu.Unlock()
@@ -141,6 +157,10 @@ func (c *Cache) LPush(key string, value string) error {
 			Type:      ListType,
 			ExpiresAt: -1,
 		}
+		c.touch(key)
+		if len(c.data) > c.maxKeys {
+			c.evict()
+		}
 		return nil
 	}
 	if item.Type != ListType {
@@ -150,6 +170,7 @@ func (c *Cache) LPush(key string, value string) error {
 	list = append([]string{value}, list...)
 	item.Value = list
 	c.data[key] = item
+	c.touch(key)
 	return nil
 }
 
@@ -164,6 +185,7 @@ func (c *Cache) LRange(key string) ([]string, error) {
 		return nil, ErrWrongType
 	}
 	list := item.Value.([]string)
+	c.touch(key)
 	return list, nil
 }
 
@@ -177,6 +199,10 @@ func (c *Cache) RPush(key string, value string) error {
 			Type:      ListType,
 			ExpiresAt: -1,
 		}
+		c.touch(key)
+		if len(c.data) > c.maxKeys {
+			c.evict()
+		}
 		return nil
 	}
 	if item.Type != ListType {
@@ -186,6 +212,7 @@ func (c *Cache) RPush(key string, value string) error {
 	list = append(list, value)
 	item.Value = list
 	c.data[key] = item
+	c.touch(key)
 	return nil
 }
 
@@ -207,9 +234,11 @@ func (c *Cache) LPop(key string) (string, error) {
 	list = list[1:]
 	if len(list) == 0 {
 		delete(c.data, key)
+		c.removeFromLRU(key)
 	} else {
 		item.Value = list
 		c.data[key] = item
+		c.touch(key)
 	}
 	return value, nil
 }
@@ -232,9 +261,11 @@ func (c *Cache) RPop(key string) (string, error) {
 	list = list[:len(list)-1]
 	if len(list) == 0 {
 		delete(c.data, key)
+		c.removeFromLRU(key)
 	} else {
 		item.Value = list
 		c.data[key] = item
+		c.touch(key)
 	}
 	return value, nil
 }
@@ -249,6 +280,7 @@ func (c *Cache) getValidItemLocked(key string) (Item, error) {
 		now := time.Now().Unix()
 		if item.ExpiresAt <= now {
 			delete(c.data, key)
+			c.removeFromLRU(key)
 			return Item{}, ErrNotFound
 		}
 	}
@@ -267,6 +299,12 @@ func (c *Cache) HSet(key, field, value string) error {
 			},
 			ExpiresAt: -1,
 		}
+
+		c.touch(key)
+		if len(c.data) > c.maxKeys {
+			c.evict()
+		}
+
 		return nil
 	}
 	if item.Type != HashType {
@@ -276,6 +314,7 @@ func (c *Cache) HSet(key, field, value string) error {
 	hash[field] = value
 	item.Value = hash
 	c.data[key] = item
+	c.touch(key)
 	return nil
 }
 
@@ -294,6 +333,7 @@ func (c *Cache) HGet(key, field string) (string, error) {
 	if !ok {
 		return "", ErrNoField
 	}
+	c.touch(key)
 	return value, nil
 }
 
@@ -314,10 +354,12 @@ func (c *Cache) HDel(key, field string) error {
 	delete(hash, field)
 	if len(hash) == 0 {
 		delete(c.data, key)
+		c.removeFromLRU(key)
 		return nil
 	}
 	item.Value = hash
 	c.data[key] = item
+	c.touch(key)
 	return nil
 }
 
@@ -336,6 +378,7 @@ func (c *Cache) HGetAll(key string) (map[string]string, error) {
 	for field, value := range hash {
 		result[field] = value
 	}
+	c.touch(key)
 	return result, nil
 }
 
@@ -343,6 +386,7 @@ func (c *Cache) Exists(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	_, err := c.getValidItemLocked(key)
+	c.touch(key)
 	return err == nil
 }
 
@@ -353,6 +397,7 @@ func (c *Cache) Type(key string) string {
 	if err != nil {
 		return "none"
 	}
+	c.touch(key)
 	switch item.Type {
 	case StringType:
 		return "string"
@@ -375,6 +420,7 @@ func (c *Cache) LLen(key string) (int, error) {
 		return 0, ErrWrongType
 	}
 	list := item.Value.([]string)
+	c.touch(key)
 	return len(list), nil
 }
 
@@ -389,5 +435,200 @@ func (c *Cache) HLen(key string) (int, error) {
 		return 0, ErrWrongType
 	}
 	hash := item.Value.(map[string]string)
+	c.touch(key)
 	return len(hash), nil
+}
+
+func (c *Cache) touch(key string) {
+
+	if elem, ok := c.lruMap[key]; ok {
+
+		c.lruList.MoveToFront(elem)
+
+		return
+	}
+
+	elem := c.lruList.PushFront(
+		&LRUEntry{
+			Key: key,
+		},
+	)
+
+	c.lruMap[key] = elem
+}
+
+func (c *Cache) evict() {
+
+	back := c.lruList.Back()
+
+	if back == nil {
+		return
+	}
+
+	entry := back.Value.(*LRUEntry)
+
+	delete(c.data, entry.Key)
+
+	delete(c.lruMap, entry.Key)
+
+	c.lruList.Remove(back)
+}
+
+func (c *Cache) removeFromLRU(key string) {
+
+	elem, ok := c.lruMap[key]
+
+	if !ok {
+		return
+	}
+
+	c.lruList.Remove(elem)
+
+	delete(c.lruMap, key)
+}
+
+func (c *Cache) Subscribe(channel string, conn net.Conn) {
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, ok := c.channels[channel]
+	if !ok {
+		c.channels[channel] = make(map[net.Conn]struct{})
+	}
+
+	c.channels[channel][conn] = struct{}{}
+}
+
+func (c *Cache) Unsubscribe(channel string, conn net.Conn) {
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	subs, ok := c.channels[channel]
+
+	if !ok {
+		return
+	}
+
+	delete(subs, conn)
+
+	if len(subs) == 0 {
+		delete(c.channels, channel)
+	}
+}
+
+func (c *Cache) Publish(channel string, msg string) {
+
+	c.mu.RLock()
+
+	subs, ok := c.channels[channel]
+
+	if !ok {
+		c.mu.RUnlock()
+		return
+	}
+
+	connections := make([]net.Conn, 0, len(subs))
+
+	for conn := range subs {
+		connections = append(connections, conn)
+	}
+
+	c.mu.RUnlock()
+
+	for _, conn := range connections {
+		fmt.Fprintln(conn, msg)
+	}
+}
+
+func (c *Cache) RemoveConnection(conn net.Conn) {
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for channel, subscribers := range c.channels {
+
+		delete(subscribers, conn)
+
+		if len(subscribers) == 0 {
+			delete(c.channels, channel)
+		}
+	}
+}
+
+func (c *Cache) SubscriberCount(channel string) int {
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	subscribers, ok := c.channels[channel]
+
+	if !ok {
+		return 0
+	}
+
+	return len(subscribers)
+}
+
+func (c *Cache) Channels() []string {
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	channels := make([]string, 0, len(c.channels))
+
+	for channel := range c.channels {
+		channels = append(channels, channel)
+	}
+
+	return channels
+}
+
+func (c *Cache) Snapshot() map[string]Item {
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	snapshot := make(map[string]Item, len(c.data))
+
+	for key, item := range c.data {
+
+		copiedItem := Item{
+			Type:      item.Type,
+			ExpiresAt: item.ExpiresAt,
+		}
+
+		switch item.Type {
+
+		case StringType:
+			copiedItem.Value = item.Value.(string)
+
+		case ListType:
+
+			list := item.Value.([]string)
+
+			listCopy := make([]string, len(list))
+
+			copy(listCopy, list)
+
+			copiedItem.Value = listCopy
+
+		case HashType:
+
+			hash := item.Value.(map[string]string)
+
+			hashCopy := make(map[string]string, len(hash))
+
+			for field, value := range hash {
+				hashCopy[field] = value
+			}
+
+			copiedItem.Value = hashCopy
+		}
+
+		snapshot[key] = copiedItem
+	}
+
+	return snapshot
 }

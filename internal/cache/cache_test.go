@@ -239,3 +239,55 @@ func TestHLenWrongType(t *testing.T) {
 		t.Fatalf("expected WRONGTYPE, got %v", err)
 	}
 }
+
+func TestLRUEviction(t *testing.T) {
+
+	cache := New(3)
+
+	cache.Set("A", "1")
+	cache.Set("B", "2")
+	cache.Set("C", "3")
+
+	_, _ = cache.Get("A")
+
+	cache.Set("D", "4")
+
+	if cache.Exists("B") {
+		t.Fatal("B should have been evicted")
+	}
+
+	if !cache.Exists("A") {
+		t.Fatal("A should still exist")
+	}
+
+	if !cache.Exists("C") {
+		t.Fatal("C should still exist")
+	}
+
+	if !cache.Exists("D") {
+		t.Fatal("D should still exist")
+	}
+}
+
+func TestSnapshot(t *testing.T) {
+
+	cache := New(100)
+
+	cache.Set("name", "Krishna")
+
+	cache.HSet("user", "role", "host")
+
+	cache.LPush("msgs", "hello")
+
+	snapshot := cache.Snapshot()
+
+	hash := snapshot["user"].Value.(map[string]string)
+
+	hash["role"] = "admin"
+
+	value, _ := cache.HGet("user", "role")
+
+	if value != "host" {
+		t.Fatal("snapshot modified live cache")
+	}
+}

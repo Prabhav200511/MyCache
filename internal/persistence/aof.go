@@ -118,3 +118,94 @@ func (a *AOF) Close() error {
 
 	return a.file.Close()
 }
+
+func (a *AOF) Rewrite(c *cache.Cache) error {
+
+	snapshot := c.Snapshot()
+
+	tempFile, err := os.Create("temp.aof")
+	if err != nil {
+		return err
+	}
+
+	defer tempFile.Close()
+
+	writer := bufio.NewWriter(tempFile)
+
+	for key, item := range snapshot {
+
+		switch item.Type {
+
+		case cache.StringType:
+
+			value := item.Value.(string)
+
+			_, err := writer.WriteString(
+				"SET " + key + " " + value + "\n",
+			)
+
+			if err != nil {
+				return err
+			}
+
+		case cache.ListType:
+
+			list := item.Value.([]string)
+
+			for _, value := range list {
+
+				_, err := writer.WriteString(
+					"RPUSH " + key + " " + value + "\n",
+				)
+
+				if err != nil {
+					return err
+				}
+			}
+
+		case cache.HashType:
+
+			hash := item.Value.(map[string]string)
+
+			for field, value := range hash {
+
+				_, err := writer.WriteString(
+					"HSET " + key + " " + field + " " + value + "\n",
+				)
+
+				if err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	if err := writer.Flush(); err != nil {
+		return err
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if err := a.file.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename("temp.aof", "appendonly.aof"); err != nil {
+		return err
+	}
+
+	file, err := os.OpenFile(
+		"appendonly.aof",
+		os.O_CREATE|os.O_APPEND|os.O_RDWR,
+		0644,
+	)
+
+	if err != nil {
+		return err
+	}
+
+	a.file = file
+
+	return nil
+}
