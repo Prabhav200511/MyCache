@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"mycache/internal/cache"
+	"mycache/internal/config"
 	"mycache/internal/persistence"
 	"net"
 	"strconv"
@@ -13,6 +14,8 @@ import (
 )
 
 func handleConnection(conn net.Conn, cache *cache.Cache, aof *persistence.AOF) {
+	authenticated := false
+
 	scanner := bufio.NewScanner(conn)
 	defer func() {
 		cache.RemoveConnection(conn)
@@ -28,8 +31,33 @@ func handleConnection(conn net.Conn, cache *cache.Cache, aof *persistence.AOF) {
 		}
 
 		cmd := strings.ToUpper(parts[0])
+		if cmd != "AUTH" {
+
+			if !authenticated {
+
+				fmt.Fprintln(conn, "NOAUTH Authentication required")
+
+				continue
+			}
+		}
 
 		switch cmd {
+		case "AUTH":
+			{
+				if len(parts) != 2 {
+					fmt.Fprintln(conn, "ERR Invalid Command")
+					continue
+				}
+
+				if parts[1] != config.Password() {
+					fmt.Fprintln(conn, "ERR Invalid Password")
+					continue
+				}
+
+				authenticated = true
+
+				fmt.Fprintln(conn, "+OK")
+			}
 		case "GET":
 			if len(parts) != 2 {
 				fmt.Fprintln(conn, "ERR Invalid Command")
