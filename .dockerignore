@@ -1,0 +1,9 @@
+# Ignore local build artifacts and IDE folders
+.vscode/
+.idea/
+*.exe
+a.exe
+
+# Ignore local persistence files so we start clean
+appendonly.aof
+temp.aof

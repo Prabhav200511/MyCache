@@ -3,15 +3,19 @@ package main
 import (
 	"log"
 	"mycache/internal/cache"
+	"mycache/internal/config"
 	"mycache/internal/network"
 	"mycache/internal/persistence"
 )
 
 func main() {
 
-	c := cache.New(10000)
+	cfg := config.Load()
 
-	aof, err := persistence.NewAOF("appendonly.aof")
+	c := cache.New(cfg.MaxKeys)
+
+	aof, err := persistence.NewAOF(cfg.AOFFile)
+
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -21,5 +25,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	network.Start(":6380", c, aof)
+	network.Start(
+		":"+cfg.Port,
+		c,
+		aof,
+		cfg,
+	)
+
+	log.Println("========== MyCache ==========")
+	log.Println("Port:", cfg.Port)
+	log.Println("MaxKeys:", cfg.MaxKeys)
+	log.Println("AOF:", cfg.AOFFile)
+	log.Println("AppendOnly:", cfg.AppendOnly)
+	log.Println("=============================")
 }

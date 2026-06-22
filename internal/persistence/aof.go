@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"mycache/internal/cache"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 type AOF struct {
@@ -24,9 +26,22 @@ func NewAOF(path string) (*AOF, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &AOF{
+
+	aof := &AOF{
 		file: file,
-	}, nil
+	}
+
+	// The `appendfsync everysec` background worker
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		for range ticker.C {
+			aof.mu.Lock()
+			aof.file.Sync()
+			aof.mu.Unlock()
+		}
+	}()
+
+	return aof, nil
 }
 
 func (a *AOF) Append(command string) error {
@@ -38,10 +53,7 @@ func (a *AOF) Append(command string) error {
 	}
 
 	_, err := a.file.WriteString(command + "\n")
-	if err != nil {
-		return err
-	}
-	return a.file.Sync()
+	return err
 }
 
 func (a *AOF) Replay(c *cache.Cache) error {
@@ -66,6 +78,11 @@ func (a *AOF) Replay(c *cache.Cache) error {
 		case "SET":
 			if len(parts) == 3 {
 				c.Set(parts[1], parts[2])
+			} else if len(parts) == 5 && strings.ToUpper(parts[3]) == "EX" {
+				ttl, err := strconv.Atoi(parts[4])
+				if err == nil && ttl > 0 {
+					c.SetWithTTL(parts[1], parts[2], time.Duration(ttl)*time.Second)
+				}
 			}
 		case "DEL":
 			if len(parts) == 2 {
@@ -95,6 +112,19 @@ func (a *AOF) Replay(c *cache.Cache) error {
 			if len(parts) == 3 {
 				_ = c.HDel(parts[1], parts[2])
 			}
+
+		case "EXPIRE":
+			if len(parts) == 3 {
+				ttl, err := strconv.Atoi(parts[2])
+				if err == nil {
+					c.Expire(parts[1], time.Duration(ttl)*time.Second)
+				}
+			}
+		case "PERSIST":
+			if len(parts) == 2 {
+				c.Persist(parts[1])
+			}
+
 		}
 	}
 	return scanner.Err()
@@ -154,8 +184,18 @@ func (a *AOF) Rewrite(c *cache.Cache) error {
 				}
 			}
 		}
-	}
 
+		// FIX: Persist the TTL if one exists!
+		if item.ExpiresAt != -1 {
+			ttl := item.ExpiresAt - time.Now().Unix()
+			if ttl > 0 {
+				if _, err := writer.WriteString("EXPIRE " + key + " " + strconv.FormatInt(ttl, 10) + "\n"); err != nil {
+					tempFile.Close()
+					return err
+				}
+			}
+		}
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 

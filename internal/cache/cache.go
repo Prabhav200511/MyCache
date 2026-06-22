@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -385,8 +386,9 @@ func (c *Cache) HGetAll(key string) (map[string]string, error) {
 func (c *Cache) Exists(key string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// Check existence and expiration, but do NOT call c.touch(key)
 	_, err := c.getValidItemLocked(key)
-	c.touch(key)
 	return err == nil
 }
 
@@ -519,26 +521,25 @@ func (c *Cache) Unsubscribe(channel string, conn net.Conn) {
 }
 
 func (c *Cache) Publish(channel string, msg string) {
-
 	c.mu.RLock()
 
 	subs, ok := c.channels[channel]
-
 	if !ok {
 		c.mu.RUnlock()
 		return
 	}
 
 	connections := make([]net.Conn, 0, len(subs))
-
 	for conn := range subs {
 		connections = append(connections, conn)
 	}
-
 	c.mu.RUnlock()
 
+	// Construct the strict Redis Pub/Sub array: *3\r\n$7\r\nmessage\r\n$<len>\r\n<chan>\r\n$<len>\r\n<msg>\r\n
+	respMsg := fmt.Sprintf("*3\r\n$7\r\nmessage\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(channel), channel, len(msg), msg)
+
 	for _, conn := range connections {
-		fmt.Fprintln(conn, msg)
+		fmt.Fprint(conn, respMsg)
 	}
 }
 
@@ -631,4 +632,88 @@ func (c *Cache) Snapshot() map[string]Item {
 	}
 
 	return snapshot
+}
+
+func (c *Cache) Expire(key string, ttl time.Duration) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, err := c.getValidItemLocked(key)
+	if err != nil {
+		return 0
+	}
+
+	item.ExpiresAt = time.Now().Add(ttl).Unix()
+	c.data[key] = item
+	c.touch(key)
+
+	return 1
+}
+
+func (c *Cache) Persist(key string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	item, err := c.getValidItemLocked(key)
+	if err != nil {
+		return 0
+	}
+
+	if item.ExpiresAt == -1 {
+		return 0
+	}
+
+	item.ExpiresAt = -1
+	c.data[key] = item
+	c.touch(key)
+
+	return 1
+}
+
+func (c *Cache) DBSize() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	count := 0
+	now := time.Now().Unix()
+
+	for _, item := range c.data {
+		if item.ExpiresAt != -1 && item.ExpiresAt <= now {
+			continue
+		}
+		count++
+	}
+
+	return count
+}
+
+func (c *Cache) Keys(pattern string) []string {
+	// Switched to RLock to allow concurrent reads
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	var result []string
+	now := time.Now().Unix()
+
+	for key, item := range c.data {
+		if item.ExpiresAt != -1 && item.ExpiresAt <= now {
+			continue
+		}
+
+		if pattern == "*" {
+			result = append(result, key)
+			continue
+		}
+
+		matched, err := filepath.Match(pattern, key)
+		if err == nil && matched {
+			result = append(result, key)
+		}
+	}
+
+	if result == nil {
+		return []string{}
+	}
+
+	return result
 }
