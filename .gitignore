@@ -1,3 +1,80 @@
-./a.exe
-./oopsc++.cpp
-./.env
+# Binaries
+
+mycache
+mycache.exe
+server
+server.exe
+
+# Go build artifacts
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go coverage
+
+coverage.out
+coverage.html
+
+# Dependency directories
+
+vendor/
+
+# Environment files
+
+.env
+.env.local
+
+# IDE
+
+.vscode/
+.idea/
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# Logs
+
+*.log
+
+# Persistence files
+
+appendonly.aof
+temp.aof
+
+# Runtime data
+
+data/
+*.rdb
+
+# Docker
+
+docker-compose.override.yml
+
+# Test artifacts
+
+testdata/
+
+# AWS
+
+*.pem
+
+# Build directories
+
+bin/
+dist/
+
+# Local cache
+
+.cache/
+
+# Go workspace
+
+go.work
+go.work.sum
