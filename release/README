@@ -1,0 +1,13 @@
+Start:
+
+mycache.exe --password "YOUR PASSWORD"
+
+Connect:
+
+redis-cli -p 6380
+
+Authenticate:
+
+AUTH "YOUR PASSWORD"
+
+

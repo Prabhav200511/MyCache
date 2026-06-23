@@ -1,7 +1,11 @@
 package main
 
 import (
+	"flag"
 	"log"
+	"os"
+	"strconv"
+
 	"mycache/internal/cache"
 	"mycache/internal/config"
 	"mycache/internal/network"
@@ -10,19 +14,99 @@ import (
 
 func main() {
 
+	// CLI Flags
+	port := flag.String(
+		"port",
+		"",
+		"Server Port",
+	)
+
+	password := flag.String(
+		"password",
+		"",
+		"Server Password",
+	)
+
+	maxKeys := flag.Int(
+		"maxkeys",
+		0,
+		"Maximum number of keys",
+	)
+
+	aofFile := flag.String(
+		"aof",
+		"",
+		"AOF file path",
+	)
+
+	flag.Parse()
+
+	// CLI flags override environment variables
+
+	if *port != "" {
+		os.Setenv(
+			"MYCACHE_PORT",
+			*port,
+		)
+	}
+
+	if *password != "" {
+		os.Setenv(
+			"MYCACHE_PASSWORD",
+			*password,
+		)
+	}
+
+	if *maxKeys > 0 {
+		os.Setenv(
+			"MYCACHE_MAX_KEYS",
+			strconv.Itoa(*maxKeys),
+		)
+	}
+
+	if *aofFile != "" {
+		os.Setenv(
+			"MYCACHE_AOF_FILE",
+			*aofFile,
+		)
+	}
+
 	cfg := config.Load()
 
-	c := cache.New(cfg.MaxKeys)
+	err := os.MkdirAll("./data", 0755)
 
-	aof, err := persistence.NewAOF(cfg.AOFFile)
+	if cfg.Password == "" {
+		log.Fatal("password is required, use --password or MYCACHE_PASSWORD")
+	}
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = aof.Replay(c)
+	log.Printf(
+		"Starting MyCache on port %s",
+		cfg.Port,
+	)
+
+	c := cache.New(
+		cfg.MaxKeys,
+	)
+
+	aof, err := persistence.NewAOF(
+		cfg.AOFFile,
+	)
+
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	if cfg.AppendOnly {
+
+		err = aof.Replay(c)
+
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	network.Start(
@@ -31,11 +115,4 @@ func main() {
 		aof,
 		cfg,
 	)
-
-	log.Println("========== MyCache ==========")
-	log.Println("Port:", cfg.Port)
-	log.Println("MaxKeys:", cfg.MaxKeys)
-	log.Println("AOF:", cfg.AOFFile)
-	log.Println("AppendOnly:", cfg.AppendOnly)
-	log.Println("=============================")
 }

@@ -36,7 +36,7 @@ func Load() *Config {
 		MaxKeys:  maxKeys,
 		AOFFile: getEnv(
 			"MYCACHE_AOF_FILE",
-			"/data/appendonly.aof",
+			"./data/appendonly.aof",
 		),
 		HTTPPort:   getEnv("MYCACHE_HTTP_PORT", "8080"),
 		AppendOnly: appendOnly,
